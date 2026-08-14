@@ -132,7 +132,7 @@ The `release` workflow runs typecheck, tests, and build before publishing, and r
 
 npm cannot configure a trusted publisher for a package that does not exist yet, so the first release and every later one authenticate differently.
 
-**First release** — needs an `NPM_TOKEN` repository secret (a granular or automation token with publish rights to the `@picgo` scope):
+**First release** — needs an `NPM_TOKEN` repository secret (a granular token with publish rights to the `@picgo` scope):
 
 ```sh
 gh secret set NPM_TOKEN --repo PicGo/dsh-plugin
