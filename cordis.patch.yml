@@ -1,0 +1,11 @@
+# The layer this bundle contributes when a profile lists it.
+# `dsh plugin add @picgo/dsh-plugin` appends this bundle to the profile's
+# `dsh.profile.bundles`, and the row below is applied after @deepseek-ai/dsh-base.
+#
+# The row carries no `config` so every field falls back to its schema default
+# (see `Config` in src/index.ts). Users override it from their own profile
+# `cordis.patch.yml` by restating this id — a patch replaces a row's entire
+# `config`, so an override must restate every key it wants to keep.
+- insert:
+    - id: picgo
+      name: '@picgo/dsh-plugin'

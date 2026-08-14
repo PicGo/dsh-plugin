@@ -1,0 +1,103 @@
+name: release
+
+# Publishing is driven by tags, not by branch pushes: a tag is an explicit
+# "ship this" and carries the exact version, so an ordinary merge to main can
+# never trigger a publish.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish_tag:
+        description: 'npm dist-tag to publish under'
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: read
+  # Required for npm provenance, which signs the package with a verifiable
+  # link back to this workflow run.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+          version: 10
+
+      # Node 24 for publishing specifically: trusted publishing needs npm
+      # >= 11.5.1, and Node 22 still ships npm 10.x. `24.x` resolves to the
+      # latest 24 release, which is well past the 24.0–24.4 range that shipped
+      # npm 11.3.0. This is the version that publishes the package, not the
+      # version the package supports — `engines` governs that, and CI tests 22.
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # A broken publish is worse than a late one, so the whole suite runs
+      # before anything reaches the registry.
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Build
+        run: pnpm run build
+
+      # Catches the mistake of tagging v0.2.0 while package.json still says
+      # 0.1.0 — npm would otherwise publish the wrong version under that tag.
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${pkg_version}"
+            exit 1
+          fi
+          echo "publishing ${pkg_version}"
+
+      # A prerelease version must not become the default install. `npm install
+      # @picgo/dsh-plugin` should never resolve to 0.2.0-beta.1.
+      - name: Choose dist-tag
+        id: dist
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.publish_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            case "$version" in
+              *-alpha*) echo "tag=alpha" >> "$GITHUB_OUTPUT" ;;
+              *-beta*)  echo "tag=beta"  >> "$GITHUB_OUTPUT" ;;
+              *-*)      echo "tag=next"  >> "$GITHUB_OUTPUT" ;;
+              *)        echo "tag=latest" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+
+      # Authentication resolves in this order:
+      #   1. Trusted publishing (OIDC) — used automatically once the package
+      #      has a trusted publisher configured on npmjs.com. No secret needed.
+      #   2. NPM_TOKEN — the fallback, and the only option for the very first
+      #      publish, because npm cannot configure a trusted publisher for a
+      #      package that does not exist yet.
+      # Provenance is generated automatically under OIDC; passing the flag
+      # explicitly keeps it on for the token path too.
+      - name: Publish to npm
+        run: npm publish --provenance --access public --tag "${{ steps.dist.outputs.tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

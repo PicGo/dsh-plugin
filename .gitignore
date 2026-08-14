@@ -1,0 +1,9 @@
+node_modules/
+lib/
+*.tgz
+.DS_Store
+*.log
+
+# Local dev overlay: hardcodes an absolute path to this checkout, so it is
+# machine-specific. See the "Development" section of README.md to recreate it.
+cordis.dev.yml

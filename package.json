@@ -1,0 +1,77 @@
+{
+  "name": "@picgo/dsh-plugin",
+  "version": "0.1.0",
+  "description": "Upload images and files to your image host from DeepSeek Harness, powered by PicGo",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "picgo",
+    "image-upload",
+    "cordis"
+  ],
+  "homepage": "https://picgo.app/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PicGo/dsh-plugin.git"
+  },
+  "author": "Molunerfinn",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "release": "bump-version",
+    "release:minor": "bump-version -t minor",
+    "release:major": "bump-version -t major",
+    "release:beta": "bump-version -b",
+    "release:dry": "bump-version -d",
+    "push-release": "git push --follow-tags origin main"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "picgo": "^3.0.1"
+  },
+  "devDependencies": {
+    "@picgo/bump-version": "^2.0.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-commands": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-skill": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@types/node": "^22.19.0",
+    "tsdown": "^0.15.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.16"
+  }
+}
