@@ -1,5 +1,7 @@
 # @picgo/dsh-plugin
 
+![@picgo/dsh-plugin](https://raw.githubusercontent.com/PicGo/dsh-plugin/main/assets/DeepSeek-PicGo.png)
+
 Upload images and files to your image host from [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), powered by [PicGo](https://picgo.app/).
 
 Harness can show your agent a screenshot, but it has no way to turn a local file into a link. So when the agent writes a README, renders a chart, or captures a screenshot, the image stays on disk and `![](./out.png)` becomes a dead link the moment you push. This plugin closes that gap.
@@ -36,6 +38,8 @@ console.log(uploaded[0].imgUrl)
 | `/picgo status` | Show the active host and sign-in state |
 | `/picgo login [token]` | Sign in to PicGo Cloud |
 | `/picgo logout` | Sign out |
+
+![The /picgo command and the bundled skill in Harness](https://raw.githubusercontent.com/PicGo/dsh-plugin/main/assets/dsh-plugin-picgo.png)
 
 **A bundled skill** that teaches the model *when* to upload — inserting a screenshot into docs is the primary case — and when not to (you named a specific destination, you want a local copy).
 
