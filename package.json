@@ -49,6 +49,7 @@
     "prepare": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
     "release": "bump-version",
     "release:minor": "bump-version -t minor",
     "release:major": "bump-version -t major",

@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { createUploadCommand } from './command.ts'
 import { PicGoRunner } from './picgo.ts'
+import { PicGoRouter, type GuiMode } from './router.ts'
 import { loadPackagedSkill } from './skill.ts'
 import { createUploadTool } from './tool.ts'
 
@@ -10,6 +11,31 @@ export const name = 'picgo'
 // An object here would be read as a name → intercept-config map, not as
 // required/optional groups. All three services ship in @deepseek-ai/dsh-base.
 export const inject = ['tools', 'commands', 'skills']
+
+/**
+ * How to reach a running PicGo desktop app.
+ *
+ * The app is a separate PicGo installation reading a different config file
+ * (Electron's userData dir, not `~/.picgo/config.json`), so routing through it
+ * is the only way to honour an image host configured in the GUI.
+ */
+export interface GuiConfig {
+  /**
+   * `auto` uses the app when it answers and the in-process library otherwise;
+   * `off` never probes; `only` requires the app rather than silently uploading
+   * to a different host.
+   */
+  mode: GuiMode
+  host: string
+  port: number
+  /** Server auth secret. Empty falls back to $PICGO_SERVER_SECRET, then none. */
+  secret: string
+  probeTimeoutMs: number
+  /** How long a heartbeat result stays good, so a batch does not re-probe per file. */
+  probeTtlMs: number
+  /** Upload deadline for this route. 0 inherits the top-level `timeoutMs`. */
+  timeoutMs: number
+}
 
 export interface Config {
   /** PicGo config file. Empty string uses PicGo's own default, `~/.picgo/config.json`. */
@@ -27,6 +53,8 @@ export interface Config {
    * log a one-line pointer at `/picgo login`.
    */
   announceSignIn: boolean
+  /** Whether and how to route uploads through a running PicGo desktop app. */
+  gui: GuiConfig
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -36,6 +64,17 @@ export const Config: Schema<Config> = Schema.object({
   registerSkill: Schema.boolean().default(true),
   registerCommand: Schema.boolean().default(true),
   announceSignIn: Schema.boolean().default(true),
+  gui: Schema.object({
+    mode: Schema.union(['auto', 'off', 'only']).default('auto'),
+    // The literal, not `localhost`: skips a DNS lookup and avoids resolving to
+    // ::1 when the app is bound to IPv4 only.
+    host: Schema.string().default('127.0.0.1'),
+    port: Schema.number().default(36677),
+    secret: Schema.string().role('secret').default(''),
+    probeTimeoutMs: Schema.number().default(1500),
+    probeTtlMs: Schema.number().default(5000),
+    timeoutMs: Schema.number().default(0),
+  }),
 })
 
 /**
@@ -44,11 +83,16 @@ export const Config: Schema<Config> = Schema.object({
  * configured needs no login and should hear nothing.
  */
 async function announceSignIn(
-  getRunner: () => PicGoRunner,
+  router: PicGoRouter,
   logger: Context['logger'],
   cancelled: () => boolean,
 ): Promise<void> {
-  const runner = getRunner()
+  // A desktop-app user needs no PicGo Cloud login and must not be nagged for
+  // one at every startup — the app has its own config and its own session.
+  const choice = await router.select()
+  if (cancelled() || choice.route.kind !== 'library') return
+
+  const runner = router.library()
   if (!runner.usesCloud()) return
 
   const auth = await runner.cloudAuth()
@@ -69,7 +113,7 @@ export function apply(ctx: Context, config: Config): void {
   // PicGo home, and a broken plugin there should surface on first use rather
   // than take down plugin load.
   let runner: PicGoRunner | undefined
-  const getRunner = (): PicGoRunner => {
+  const getLibrary = (): PicGoRunner => {
     runner ??= new PicGoRunner({
       ...config.configPath !== '' ? { configPath: config.configPath } : {},
       silent: config.silent,
@@ -78,10 +122,24 @@ export function apply(ctx: Context, config: Config): void {
     return runner
   }
 
-  ctx.tools.register(createUploadTool(getRunner))
+  const router = new PicGoRouter({
+    mode: config.gui.mode,
+    probeTtlMs: config.gui.probeTtlMs,
+    gui: {
+      host: config.gui.host,
+      port: config.gui.port,
+      secret: config.gui.secret,
+      probeTimeoutMs: config.gui.probeTimeoutMs,
+      timeoutMs: config.gui.timeoutMs > 0 ? config.gui.timeoutMs : config.timeoutMs,
+    },
+    getLibrary,
+  })
+  const getRouter = (): PicGoRouter => router
+
+  ctx.tools.register(createUploadTool(getRouter))
 
   if (config.registerCommand && ctx.commands !== undefined) {
-    ctx.commands.register(createUploadCommand(getRunner))
+    ctx.commands.register(createUploadCommand(getRouter))
   }
 
   if (config.announceSignIn) {
@@ -92,7 +150,7 @@ export function apply(ctx: Context, config: Config): void {
     let cancelled = false
     ctx.effect(() => {
       const timer = setTimeout(() => {
-        announceSignIn(getRunner, ctx.logger, () => cancelled)
+        announceSignIn(router, ctx.logger, () => cancelled)
           .catch(() => { /* a startup hint must never fail plugin load */ })
       }, 0)
       timer.unref?.()

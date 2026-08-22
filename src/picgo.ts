@@ -1,4 +1,17 @@
-import { PicGo, IBuildInEvent, type IImgInfo } from 'picgo'
+import { PicGo, IBuildInEvent } from 'picgo'
+import {
+  PicGoUploadError,
+  isUploaded,
+  toUploadedItem,
+  type PreflightResult,
+  type UploadOutcome,
+  type UploadRoute,
+} from './upload.ts'
+
+// Re-exported so existing import sites keep working; the definitions moved to
+// upload.ts so the desktop-app route can share them without importing `picgo`.
+export { PicGoUploadError }
+export type { UploadedItem, UploadOutcome, PreflightResult, UploadRoute } from './upload.ts'
 
 /** Where the user stands with PicGo Cloud, when that is the active uploader. */
 export type CloudAuthState =
@@ -10,32 +23,6 @@ export type CloudAuthState =
   | { kind: 'expired' }
   /** The check itself failed, usually a network problem. Not the same as logged out. */
   | { kind: 'unknown'; reason: string }
-
-/** One file that PicGo accepted and turned into a hosted URL. */
-export interface UploadedItem {
-  /** The hosted URL. Always present — an item without one is a failure, not a result. */
-  imgUrl: string
-  fileName?: string
-  /** Uploader id that produced the URL, e.g. `github`, `smms`, `picgo-cloud`. */
-  type?: string
-  size?: number
-  width?: number
-  height?: number
-}
-
-/** Outcome of one upload call, including the partial-success case. */
-export interface UploadOutcome {
-  uploaded: UploadedItem[]
-  /** Inputs that produced no URL. Empty on full success. */
-  failed: string[]
-  /** Why the upload failed, when anything did. */
-  error?: string
-}
-
-/** A PicGo upload that produced nothing usable. */
-export class PicGoUploadError extends Error {
-  override name = 'PicGoUploadError'
-}
 
 export interface PicGoRunnerOptions {
   configPath?: string | undefined
@@ -50,13 +37,17 @@ export interface PicGoRunnerOptions {
  * Concurrency is safe on a single instance: `Lifecycle.start()` builds a fresh
  * context per call, so `input`/`output` never cross between concurrent uploads.
  */
-export class PicGoRunner {
+export class PicGoRunner implements UploadRoute {
+  readonly kind = 'library' as const
+
   private readonly picgo: PicGo
   private readonly timeoutMs: number
+  private readonly configPath: string
 
   constructor(options: PicGoRunnerOptions) {
     this.timeoutMs = options.timeoutMs
-    this.picgo = new PicGo(options.configPath ?? '')
+    this.configPath = options.configPath ?? ''
+    this.picgo = new PicGo(this.configPath)
 
     // In-memory only. `saveConfig()`/`removeConfig()` would rewrite the user's
     // ~/.picgo/config.json, which they share with the PicGo desktop app.
@@ -69,6 +60,25 @@ export class PicGoRunner {
       // share one switch in Logger.handleLog().
       ...options.silent ? { silent: true } : {},
     })
+  }
+
+  describe(): string {
+    return `in-process PicGo library (${this.configPath === '' ? '~/.picgo/config.json' : this.configPath})`
+  }
+
+  /**
+   * PicGo Cloud is the only host that needs a sign-in, so it is the only one
+   * worth blocking an upload for. A failed *check* is not a sign-out and must
+   * not block — see `cloudAuth()`'s `unknown` state.
+   */
+  async preflight(): Promise<PreflightResult> {
+    if (!this.usesCloud()) return { kind: 'ok' }
+
+    const auth = await this.cloudAuth()
+    if (auth.kind === 'logged-out' || auth.kind === 'expired') {
+      return { kind: 'sign-in-required', state: auth.kind }
+    }
+    return { kind: 'ok' }
   }
 
   /** The uploader that will handle the next upload, e.g. `github` or `picgo-cloud`. */
@@ -184,6 +194,7 @@ export class PicGoRunner {
       return {
         uploaded,
         failed,
+        uploader: this.currentUploader(),
         ...failed.length > 0
           ? { error: describeError(emitted, this.currentUploader()) }
           : {},
@@ -220,22 +231,6 @@ export class PicGoRunner {
       if (timer !== undefined) clearTimeout(timer)
       if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
     }
-  }
-}
-
-/** An entry counts as uploaded only once it carries a URL. */
-function isUploaded(item: IImgInfo): boolean {
-  return typeof item.imgUrl === 'string' && item.imgUrl !== ''
-}
-
-function toUploadedItem(item: IImgInfo): UploadedItem {
-  return {
-    imgUrl: item.imgUrl as string,
-    ...item.fileName !== undefined ? { fileName: item.fileName } : {},
-    ...item.type !== undefined ? { type: String(item.type) } : {},
-    ...item.size !== undefined ? { size: item.size } : {},
-    ...item.width !== undefined ? { width: item.width } : {},
-    ...item.height !== undefined ? { height: item.height } : {},
   }
 }
 

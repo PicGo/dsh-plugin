@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from 'node:path'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { PicGoRunner, UploadOutcome } from './picgo.ts'
+import type { PicGoRouter } from './router.ts'
+import type { UploadOutcome } from './upload.ts'
 
 /** Fields a caller can rely on; PicGo marks the rest optional per uploader. */
 const UPLOADED_ITEM = {
@@ -16,7 +17,7 @@ const UPLOADED_ITEM = {
   },
 } as const
 
-export function createUploadTool(getRunner: () => PicGoRunner): ToolDefinition {
+export function createUploadTool(getRouter: () => PicGoRouter): ToolDefinition {
   return defineTool({
     name: 'picgo_upload',
     description:
@@ -54,6 +55,12 @@ export function createUploadTool(getRunner: () => PicGoRunner): ToolDefinition {
             required: true,
             description: 'Input paths that produced no URL; empty when every file succeeded',
           },
+          failedUnknown: {
+            type: 'integer',
+            description:
+              'How many files failed without the route being able to say which. Only set by an older '
+              + 'PicGo desktop app; report the count honestly rather than naming a guess.',
+          },
           uploader: {
             type: 'string',
             required: true,
@@ -64,10 +71,20 @@ export function createUploadTool(getRunner: () => PicGoRunner): ToolDefinition {
       },
       render: (_args, value) => {
         const lines = value.uploaded.map(item => item.imgUrl)
+        const unknown = value.failedUnknown ?? 0
+        const total = value.uploaded.length + value.failed.length + unknown
+
         if (value.failed.length > 0) {
           lines.push(
-            `\n${value.failed.length} of ${value.uploaded.length + value.failed.length} failed: `
+            `\n${value.failed.length} of ${total} failed: `
             + `${value.failed.join(', ')}${value.error !== undefined ? ` — ${value.error}` : ''}`,
+          )
+        } else if (unknown > 0) {
+          // Never render a partial batch as a clean success just because the
+          // failures could not be named.
+          lines.push(
+            `\n${unknown} of ${total} failed`
+            + `${value.error !== undefined ? ` — ${value.error}` : ''}`,
           )
         }
         return [{ type: 'text', text: lines.join('\n') }]
@@ -93,21 +110,24 @@ export function createUploadTool(getRunner: () => PicGoRunner): ToolDefinition {
         throw new Error('picgo_upload requires at least one file path.')
       }
 
-      const runner = getRunner()
-
-      // Catch the first-run case before spending an upload on it. The browser
-      // sign-in blocks on a callback, so the model must not start it — say what
-      // the user should do and let them do it.
-      if (runner.usesCloud()) {
-        const auth = await runner.cloudAuth()
-        if (auth.kind === 'logged-out' || auth.kind === 'expired') {
-          throw new Error(signInMessage(auth.kind))
-        }
-      }
-
       const absolute = paths.map(path => isAbsolute(path) ? path : resolve(path))
-      const outcome = await runner.uploadFiles(absolute, exec.signal)
-      return toCanonical(outcome, runner.currentUploader())
+
+      // Preflight and upload must run on the same route, so both happen inside
+      // one `run()` — a desktop app that dies in between would otherwise let a
+      // "no sign-in needed" answer guard a library upload that needs one.
+      const { result, route } = await getRouter().run(async (picked) => {
+        // Catch the first-run case before spending an upload on it. The browser
+        // sign-in blocks on a callback, so the model must not start it — say
+        // what the user should do and let them do it. The desktop-app route
+        // reports 'ok' unconditionally; its config is not visible from here.
+        const preflight = await picked.preflight()
+        if (preflight.kind === 'sign-in-required') {
+          throw new Error(signInMessage(preflight.state))
+        }
+        return picked.uploadFiles(absolute, exec.signal)
+      })
+
+      return toCanonical(result, result.uploader ?? route.currentUploader())
     },
   })
 }
@@ -115,12 +135,16 @@ export function createUploadTool(getRunner: () => PicGoRunner): ToolDefinition {
 export function toCanonical(outcome: UploadOutcome, uploader: string): {
   uploaded: UploadOutcome['uploaded']
   failed: string[]
+  failedUnknown?: number
   uploader: string
   error?: string
 } {
   return {
     uploaded: outcome.uploaded,
     failed: outcome.failed,
+    ...outcome.failedUnknown !== undefined && outcome.failedUnknown > 0
+      ? { failedUnknown: outcome.failedUnknown }
+      : {},
     uploader,
     ...outcome.error !== undefined ? { error: outcome.error } : {},
   }

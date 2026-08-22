@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { PicGoRunner, UploadOutcome } from '../picgo.ts'
+import type { PicGoRouter } from '../router.ts'
 import { createUploadTool, toCanonical } from '../tool.ts'
+import type { UploadRoute } from '../upload.ts'
 
-/** A runner stub; only the two members the tool touches are implemented. */
+/** A runner stub; only the members the tool touches are implemented. */
 function stubRunner(overrides: Partial<PicGoRunner> = {}): PicGoRunner {
-  return {
+  const base = {
+    kind: 'library' as const,
+    describe: () => 'in-process PicGo library',
     currentUploader: () => 'github',
     // Default to a host that needs no sign-in, so tests exercise the upload path.
     usesCloud: () => false,
@@ -14,14 +18,38 @@ function stubRunner(overrides: Partial<PicGoRunner> = {}): PicGoRunner {
       failed: [],
     }),
     ...overrides,
+  }
+
+  // Derived rather than stubbed flat, so overriding usesCloud/cloudAuth still
+  // exercises the real precheck rule instead of passing vacuously.
+  return {
+    ...base,
+    preflight: async () => {
+      if (!base.usesCloud()) return { kind: 'ok' as const }
+      const auth = await base.cloudAuth()
+      return auth.kind === 'logged-out' || auth.kind === 'expired'
+        ? { kind: 'sign-in-required' as const, state: auth.kind }
+        : { kind: 'ok' as const }
+    },
   } as PicGoRunner
 }
+
+/** Wrap a route in a router that always selects it and never falls back. */
+function stubRouter(route: UploadRoute, library?: PicGoRunner): PicGoRouter {
+  return {
+    library: () => library ?? (route as PicGoRunner),
+    select: async () => ({ route, reason: 'stub' }),
+    run: async <T>(work: (r: UploadRoute) => Promise<T>) => ({ result: await work(route), route }),
+  } as unknown as PicGoRouter
+}
+
+const routerFor = (overrides: Partial<PicGoRunner> = {}) => stubRouter(stubRunner(overrides))
 
 const exec = { signal: new AbortController().signal } as never
 
 describe('picgo_upload', () => {
   it('rejects an empty path list instead of falling through to a clipboard upload', async () => {
-    const tool = createUploadTool(() => stubRunner())
+    const tool = createUploadTool(() => routerFor())
     // PicGo reads an empty input list as "upload the clipboard", which would
     // upload something the caller never asked for.
     await expect(tool.execute({ paths: [] }, exec)).rejects.toThrow(/at least one file path/u)
@@ -30,7 +58,7 @@ describe('picgo_upload', () => {
 
   it('resolves relative paths to absolute before handing them to PicGo', async () => {
     let received: string[] = []
-    const tool = createUploadTool(() => stubRunner({
+    const tool = createUploadTool(() => routerFor({
       uploadFiles: async (paths: string[]) => {
         received = paths
         return { uploaded: [{ imgUrl: 'https://cdn.test/a.png' }], failed: [] }
@@ -70,7 +98,7 @@ describe('picgo_upload', () => {
       uploader: string
       error?: string
     }) {
-      const tool = createUploadTool(() => stubRunner())
+      const tool = createUploadTool(() => routerFor())
       return tool.output.render({ paths: [] }, value as never)
     }
 
@@ -88,7 +116,7 @@ describe('picgo_upload', () => {
   })
 
   it('presents a pending card that is a pure function of its args', () => {
-    const tool = createUploadTool(() => stubRunner())
+    const tool = createUploadTool(() => routerFor())
     const args = { paths: ['/tmp/shot.png'] }
 
     const first = tool.presentCall?.(args)
@@ -104,7 +132,7 @@ describe('picgo_upload', () => {
   })
 
   it('tells the model to hand the sign-in to the user, not to run it', async () => {
-    const tool = createUploadTool(() => stubRunner({
+    const tool = createUploadTool(() => routerFor({
       currentUploader: () => 'picgo-cloud',
       usesCloud: () => true,
       cloudAuth: async () => ({ kind: 'logged-out' }),
@@ -119,7 +147,7 @@ describe('picgo_upload', () => {
 
   it('does not check for a session when the host needs none', async () => {
     let checked = false
-    const tool = createUploadTool(() => stubRunner({
+    const tool = createUploadTool(() => routerFor({
       cloudAuth: async () => {
         checked = true
         return { kind: 'logged-out' }
@@ -132,7 +160,7 @@ describe('picgo_upload', () => {
 
   it('uploads anyway when the session check is inconclusive', async () => {
     let uploaded = false
-    const tool = createUploadTool(() => stubRunner({
+    const tool = createUploadTool(() => routerFor({
       usesCloud: () => true,
       cloudAuth: async () => ({ kind: 'unknown', reason: 'ETIMEDOUT' }),
       uploadFiles: async () => {
@@ -146,9 +174,70 @@ describe('picgo_upload', () => {
   })
 
   it('titles a multi-file call by count', () => {
-    const tool = createUploadTool(() => stubRunner())
+    const tool = createUploadTool(() => routerFor())
     expect(tool.presentCall?.({ paths: ['/a.png', '/b.png'] })).toMatchObject({
       title: 'Upload 2 files to image host',
     })
+  })
+})
+
+describe('picgo_upload on the desktop-app route', () => {
+  /** A GUI route stub: its preflight is unconditionally ok, as the real one is. */
+  function stubGui(overrides: Partial<UploadRoute> = {}): UploadRoute {
+    return {
+      kind: 'gui' as const,
+      describe: () => 'PicGo desktop app — http://127.0.0.1:36677',
+      currentUploader: () => '',
+      preflight: async () => ({ kind: 'ok' as const }),
+      uploadFiles: async () => ({
+        uploaded: [{ imgUrl: 'https://gui/a.png' }],
+        failed: [],
+        uploader: 'github',
+      }),
+      uploadClipboard: async () => ({ uploaded: [], failed: [] }),
+      ...overrides,
+    }
+  }
+
+  it('never consults the CLI config for a sign-in the app does not use', async () => {
+    // The regression test for the subtlest bug here: a user whose GUI is set to
+    // GitHub, but whose untouched ~/.picgo/config.json still says picgo-cloud,
+    // must not be blocked on a sign-in that has nothing to do with the upload.
+    const cloudAuth = vi.fn(async () => ({ kind: 'logged-out' as const }))
+    const library = stubRunner({ usesCloud: () => true, cloudAuth })
+    const tool = createUploadTool(() => stubRouter(stubGui(), library))
+
+    const result = await tool.execute({ paths: ['/tmp/a.png'] }, exec) as { uploaded: unknown[] }
+    expect(result.uploaded).toHaveLength(1)
+    expect(cloudAuth).not.toHaveBeenCalled()
+  })
+
+  it('reports the uploader the app actually used, not a guess', async () => {
+    const tool = createUploadTool(() => stubRouter(stubGui()))
+
+    const result = await tool.execute({ paths: ['/tmp/a.png'] }, exec) as { uploader: string }
+    // currentUploader() is '' on this route because the app's config cannot be
+    // read ahead of time; the response is the only honest source.
+    expect(result.uploader).toBe('github')
+  })
+
+  it('carries an unattributable failure count through to the caller', async () => {
+    const tool = createUploadTool(() => stubRouter(stubGui({
+      uploadFiles: async () => ({
+        uploaded: [{ imgUrl: 'https://gui/a.png' }],
+        failed: [],
+        failedUnknown: 2,
+        error: 'did not report which inputs failed',
+      }),
+    })))
+
+    const result = await tool.execute({ paths: ['/a.png', '/b.png', '/c.png'] }, exec) as {
+      failedUnknown?: number
+    }
+    expect(result.failedUnknown).toBe(2)
+
+    // A partial batch must never render as a clean success.
+    const text = (tool.output.render({ paths: [] }, result as never)[0] as { text: string }).text
+    expect(text).toContain('2 of 3 failed')
   })
 })

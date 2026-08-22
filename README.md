@@ -8,6 +8,8 @@ Harness can show your agent a screenshot, but it has no way to turn a local file
 
 It uploads through **whatever image host you already configured in PicGo** — PicGo Cloud, GitHub, S3, Tencent COS, Qiniu, or any third-party uploader plugin you installed. Nothing to re-configure. If you've never used PicGo, it walks you into PicGo Cloud's free tier.
 
+If the **PicGo desktop app** is running, uploads go through it, reusing the image host you set up in its window. Otherwise they run in-process. See [Upload routes](#upload-routes).
+
 ## Install
 
 ```sh
@@ -43,6 +45,22 @@ console.log(uploaded[0].imgUrl)
 
 **A bundled skill** that teaches the model *when* to upload — inserting a screenshot into docs is the primary case — and when not to (you named a specific destination, you want a local copy).
 
+## Upload routes
+
+There are two ways this plugin can reach your image host, and it picks one per upload:
+
+1. **The PicGo desktop app**, when it is running. It exposes a local upload server, and using it means your uploads honour the host you configured in the app's window.
+2. **In-process PicGo**, otherwise — the `picgo` library reading `~/.picgo/config.json`.
+
+This matters because **the two read different config files**. The desktop app stores its settings in the system application-data directory (on macOS `~/Library/Application Support/picgo/data.json`), while the library reads `~/.picgo/config.json`. If you have only ever used the GUI, the library route sees a config you never touched — most likely empty and defaulting to PicGo Cloud. Preferring the app is what makes "it just uses my existing setup" true.
+
+> **Upgrading from 0.1.x?** If the desktop app is running *and* the two configs point at different hosts, your uploads will now land on the app's host rather than the CLI's. Set `gui.mode: off` to keep the old behaviour.
+
+`/picgo status` tells you which route is active. Two things worth knowing about the desktop-app route:
+
+- The app **copies each URL to your clipboard and shows a notification** — that is the app's own behaviour and this plugin cannot turn it off.
+- If an upload there fails with a login error, sign in **from the app's own window**. `/picgo login` writes the PicGo CLI config, which the desktop app does not read.
+
 ## First run
 
 If you've never configured PicGo, uploads default to **PicGo Cloud**, which needs a one-time sign-in. The free tier covers casual use.
@@ -77,8 +95,21 @@ Every field has a working default. Override them from your profile's `cordis.pat
 | `registerSkill` | `true` | Register the bundled `picgo-upload` skill |
 | `registerCommand` | `true` | Register the `/picgo` command |
 | `announceSignIn` | `true` | On startup, point a signed-out PicGo Cloud user at `/picgo login` |
+| `gui` | see below | How to reach a running PicGo desktop app |
 
-A patch replaces a row's **entire** `config` rather than merging keys, so restate every field you want to keep.
+`gui` controls the desktop-app route described in [Upload routes](#upload-routes):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `gui.mode` | `auto` | `auto` uses the app when it answers; `off` never tries; `only` requires it rather than uploading to a different host |
+| `gui.host` | `127.0.0.1` | Where the app's upload server listens |
+| `gui.port` | `36677` | " |
+| `gui.secret` | `''` | Auth secret, if you enabled one in the app. Empty falls back to `$PICGO_SERVER_SECRET` |
+| `gui.probeTimeoutMs` | `1500` | How long to wait for the app to answer a heartbeat |
+| `gui.probeTtlMs` | `5000` | How long a heartbeat result is reused, so a multi-file upload does not re-probe per file |
+| `gui.timeoutMs` | `0` | Upload deadline for this route; `0` inherits `timeoutMs` |
+
+A patch replaces a row's **entire** `config` rather than merging keys, so restate every field you want to keep. Within `gui`, unset keys still fall back to the defaults above — overriding `gui.mode` alone is fine.
 
 ## Notes
 
@@ -88,6 +119,10 @@ A patch replaces a row's **entire** `config` rather than merging keys, so restat
 
 **Clipboard uploads need a desktop session** and are only reachable through `/picgo` — the model is never given a way to upload your clipboard, since it can't know what's on it.
 
+**Falling back to the in-process route is deliberately narrow.** If the desktop app stops between the check and the upload, the upload is retried in-process. But a rejected upload, a missing auth secret, or a timeout is reported rather than retried elsewhere: the app may have already accepted the file, and silently re-uploading would put a second copy on a host you did not pick.
+
+**If an upload through the app hangs**, check whether "rename before upload" is enabled in its settings — that opens a dialog and waits for a human, which nothing is going to answer in an agent session. The timeout message says so too.
+
 ## Development
 
 ```sh
@@ -95,6 +130,8 @@ pnpm install
 pnpm build
 pnpm test
 ```
+
+`pnpm test:live` additionally exercises the desktop-app route against a running PicGo app. It is kept out of `pnpm test` because it **uploads real files to your real image host**.
 
 To run it against a dsh source checkout without packaging, write a `cordis.dev.yml` (gitignored — the path is specific to your machine):
 
@@ -159,7 +196,9 @@ Trusted publishing needs npm ≥ 11.5.1, so the release workflow runs on Node 24
 
 ## Compatibility
 
-Tested against DeepSeek Harness `0.1.0-rc.5` (commit `47f9438`, 2026-08-13) and PicGo Core 3.0.1. Requires Node `^22.19.0 || >=24.0.0`.
+Tested against DeepSeek Harness `0.1.1-rc.2` (2026-08-22) and PicGo Core 3.0.1. Requires Node `^22.19.0 || >=24.0.0`.
+
+The desktop-app route needs a PicGo app new enough to expose the local upload server. If yours is older, `gui.mode: auto` simply never finds it and everything runs in-process as before.
 
 Harness is a developer preview and its APIs change often. If a release breaks this plugin, please [open an issue](https://github.com/PicGo/dsh-plugin/issues).
 

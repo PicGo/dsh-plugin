@@ -44,6 +44,13 @@ The result is structured, so read the fields directly rather than parsing prose:
 
 **Tell the user which host was used** when it isn't PicGo Cloud — read it from `uploader` (e.g. "Uploaded via GitHub"). It's one line and it matters, because the destination is their configuration, not your choice.
 
+The upload may have gone through the **PicGo desktop app** if it happens to be running, in which case the host comes from the app's own settings rather than the CLI config. Two consequences worth a line to the user when they come up:
+
+- That route makes the app **copy the URL to their clipboard and show a notification**. Mention it if they seem surprised; it is the app's behaviour, not something that can be turned off here.
+- If it fails with a login error, they must sign in **from the PicGo desktop app window**. `/picgo login` writes the CLI config, which that app does not read, so suggesting it there would waste their time.
+
+If `failedUnknown` is set, that many files failed but the app was too old to say which. Report the count honestly — do not guess at filenames.
+
 ## Output
 
 - **Default to returning the bare URL.** When the context is clearly markdown or a document, return a markdown image instead: `![](imgUrl)` with sensible alt text. For non-image files, a plain link is right.
@@ -85,7 +92,8 @@ Upload failures are not all alike. The one rule: distinguish what a retry can fi
 
 | Failure | Handling |
 |---|---|
-| **Not logged in / session invalid** (PicGo Cloud) | Tell the user to run `/picgo login` (see above). **Don't retry blindly, and don't run the login yourself.** |
+| **Not logged in / session invalid** (PicGo Cloud) | Tell the user to run `/picgo login` (see above). **Don't retry blindly, and don't run the login yourself.** If the error says it came from the PicGo desktop app, tell them to sign in **in the app's window** instead — `/picgo login` does not affect it. |
+| **Desktop app did not answer in time** | It may be blocked on a "rename before upload" dialog. Tell the user to turn that setting off or close the app; **don't retry**, or they may end up with two copies. |
 | **File type not allowed** | The host rejects that type. Don't retry; optionally suggest a different host. |
 | **Quota exceeded / paid plan needed** | Free tier is used up — guide the user to upgrade. Don't retry. |
 | **Network / 5xx** | Transient — **retry at most once**, then report. |
