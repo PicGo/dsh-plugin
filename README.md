@@ -196,7 +196,7 @@ Trusted publishing needs npm ≥ 11.5.1, so the release workflow runs on Node 24
 
 ## Compatibility
 
-Tested against DeepSeek Harness `0.1.1-rc.2` (2026-08-22) and PicGo Core 3.0.1. Requires Node `^22.19.0 || >=24.0.0`.
+Requires DeepSeek Harness `0.2.1-rc.2` or later (tested against `0.2.1-rc.2` and `0.2.1-rc.3`) and PicGo Core 3.0.1. Requires Node `^22.19.0 || >=24.0.0`. Older Harness releases reject this version as incompatible; stay on `@picgo/dsh-plugin@0.2.0` for those.
 
 The desktop-app route needs a PicGo app new enough to expose the local upload server. If yours is older, `gui.mode: auto` simply never finds it and everything runs in-process as before.
 
